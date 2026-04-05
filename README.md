@@ -5,28 +5,7 @@ Official repo: https://github.com/LeapLabTHU/ProCo
 
 ---
 
-## What changed vs. your original code
 
-| Setting | Your code | Paper (Section 4.2) | Fixed? |
-|---|---|---|---|
-| `--epochs` | 500 | **200** (Table 6) / **400** (Table 7) | ✅ |
-| `--batch_size` | 128 | **256** | ✅ |
-| `--lr` | 0.5 | **0.3** | ✅ |
-| `--weight_decay` | 1e-4 | **4e-4** | ✅ |
-| `--tau` | 0.07 | **0.1** (CIFAR) | ✅ |
-| `--alpha` | 1.5 | **1.0** (Fig. 3) | ✅ |
-| `--proj_dim` | 256 | **128** (CIFAR) | ✅ |
-| `--proj_hidden` | 1024 | **512** (CIFAR) | ✅ |
-| LR warmup epochs | auto (~2% of total) | **5** for 200ep / **10** for 400ep | ✅ |
-| LR decay epochs | 80%/90% of total | **160 & 180** (200ep) / **360 & 380** (400ep) | ✅ |
-| Nesterov SGD | `True` | not mentioned → **False** | ✅ |
-| Gradient clipping | 1.0 | not used in paper | ✅ removed |
-| fp16 mixed precision | forced on | not used in paper | ✅ removed |
-| `vMF kappa` clamp max | 10.0 | — (no mention) | ✅ relaxed to 50 |
-| Shot evaluation | overall only | **Many / Med / Few breakdown** (Table 7) | ✅ added |
-| Checkpoint saves vMF state | ✗ | needed for resume | ✅ fixed |
-
----
 
 ## Installation
 
