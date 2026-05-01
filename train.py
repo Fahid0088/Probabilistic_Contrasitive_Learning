@@ -81,7 +81,8 @@ from datasets.lt_cifar        import (
 # ── CSV Logging ───────────────────────────────────────────────────────────────
 import csv
 
-def log_results_to_csv(args, overall, many, medium, few, best_acc, epoch):
+def log_results_to_csv(args, overall, many, medium, few, best_acc, epoch,
+                       total_training_time, avg_epoch_time):
     """
     Appends one row per run to results_log.csv in the save directory.
     Captures all CLI args + final accuracy results in one row.
@@ -93,6 +94,8 @@ def log_results_to_csv(args, overall, many, medium, few, best_acc, epoch):
         # All command-line parameters
         'dataset':           args.dataset,
         'imbalance_factor':  args.imbalance_factor,
+        'backbone':          args.backbone,
+        'activation':        args.activation,
         'epochs':            args.epochs,
         'batch_size':        args.batch_size,
         'lr':                args.lr,
@@ -104,6 +107,10 @@ def log_results_to_csv(args, overall, many, medium, few, best_acc, epoch):
         'proj_hidden':       args.proj_hidden,
         'num_workers':       args.num_workers,
         'seed':              args.seed,
+        'device':            args.device,
+        'cuda_available':    args.cuda_available,
+        'using_gpu':         args.using_gpu,
+        'gpu_name':          args.gpu_name,
         # Results
         'final_epoch':       epoch + 1,
         'best_acc':          round(best_acc, 4),
@@ -111,6 +118,8 @@ def log_results_to_csv(args, overall, many, medium, few, best_acc, epoch):
         'final_many':        round(many, 4),
         'final_medium':      round(medium, 4),
         'final_few':         round(few, 4),
+        'total_training_time_sec': round(total_training_time, 2),
+        'avg_epoch_time_sec': round(avg_epoch_time, 2),
         # Timestamp
         'timestamp':         time.strftime('%Y-%m-%d %H:%M:%S'),
     }
@@ -139,6 +148,14 @@ def get_args() -> argparse.Namespace:
     p.add_argument('--data_root', default='./data',
                    help='Root directory for dataset download/cache')
 
+    # ── Experimental setup (backbone + activation) ────────────────────────
+    p.add_argument('--backbone', default='resnet32',
+                   choices=['resnet32', 'resnet18', 'mobilenetv2'],
+                   help='Backbone network for the ProCo model')
+    p.add_argument('--activation', default='relu',
+                   choices=['relu', 'swish', 'gelu'],
+                   help='Activation function used inside the backbone and projection head')
+
     # ── Training schedule (Section 4.2) ─────────────────────────────────────
     p.add_argument('--epochs', type=int, default=200,
                    help='Total training epochs. Paper: 200 (Table 6) or 400 (Table 7)')
@@ -165,7 +182,7 @@ def get_args() -> argparse.Namespace:
 
     # ── I/O & misc ──────────────────────────────────────────────────────────
     p.add_argument('--num_workers', type=int, default=4)
-    p.add_argument('--seed',        type=int, default=42)
+    p.add_argument('--seed',        type=int, default=45)
     p.add_argument('--save_dir',    default='./checkpoints')
     p.add_argument('--log_dir',     default='./runs')
     p.add_argument('--eval_freq',   type=int, default=10,
@@ -362,6 +379,10 @@ def train_one_epoch(
 def main():
     args   = get_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    args.device = device.type
+    args.cuda_available = torch.cuda.is_available()
+    args.using_gpu = device.type == 'cuda'
+    args.gpu_name = torch.cuda.get_device_name(0) if args.using_gpu else 'CPU'
 
     # Reproducibility
     torch.manual_seed(args.seed)
@@ -370,7 +391,11 @@ def main():
 
     print(f'\n{"="*65}')
     print(f'  ProCo  |  {args.dataset.upper()}-LT  |  γ={args.imbalance_factor}')
+    print(f'  Backbone: {args.backbone}  |  Activation: {args.activation}')
     print(f'  Device : {device}')
+    print(f'  CUDA available: {args.cuda_available}  |  Using GPU: {args.using_gpu}')
+    if args.using_gpu:
+        print(f'  GPU name: {args.gpu_name}')
     print(f'  Epochs : {args.epochs}  |  BS={args.batch_size}  |  LR={args.lr}')
     print(f'  τ={args.tau}  |  α={args.alpha}  |  proj_dim={args.proj_dim}')
     print(f'{"="*65}\n')
@@ -398,11 +423,11 @@ def main():
     # Paper uses batch_size=256 with drop_last=True  (standard for contrastive)
     train_loader = DataLoader(
         train_set, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=True, drop_last=True,
+        num_workers=args.num_workers, pin_memory=(device.type == 'cuda'), drop_last=True,
     )
     val_loader = DataLoader(
         val_set, batch_size=256, shuffle=False,
-        num_workers=args.num_workers, pin_memory=True,
+        num_workers=args.num_workers, pin_memory=(device.type == 'cuda'),
     )
 
     num_classes      = train_set.num_classes
@@ -416,12 +441,14 @@ def main():
           f'(head)  Min: {int(train_set.class_freq.min())}  (tail)\n')
 
     # ── Model (Section 4.2) ──────────────────────────────────────────────────
-    # Backbone: ResNet-32
+    # Backbone: configurable for the new experiment grid
     # Two branches: classification (linear) + representation (MLP projection head)
     model = ProCoModel(
         num_classes=num_classes,
         proj_hidden=args.proj_hidden,   # 512 for CIFAR
         proj_out=args.proj_dim,         # 128 for CIFAR
+        backbone=args.backbone,
+        activation=args.activation,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
@@ -462,7 +489,7 @@ def main():
         writer = SummaryWriter(
             log_dir=os.path.join(
                 args.log_dir,
-                f'{args.dataset}_imb{args.imbalance_factor}_ep{args.epochs}',
+                f'{args.dataset}_{args.backbone}_{args.activation}_imb{args.imbalance_factor}_ep{args.epochs}',
             )
         )
 
@@ -496,7 +523,10 @@ def main():
 
     # ── Training Loop ────────────────────────────────────────────────────────
     print('  Starting training...\n')
+    epoch_times = []
+    last_epoch = start_epoch - 1
     for epoch in range(start_epoch, args.epochs):
+        epoch_start_time = time.perf_counter()
 
         # Set LR according to paper schedule  (Section 4.2)
         lr = adjust_lr(optimizer, epoch, args)
@@ -541,7 +571,7 @@ def main():
 
             ckpt_path = os.path.join(
                 args.save_dir,
-                f'proco_{args.dataset}_imb{args.imbalance_factor}_ep{epoch+1}.pth',
+                f'proco_{args.dataset}_{args.backbone}_{args.activation}_imb{args.imbalance_factor}_ep{epoch+1}.pth',
             )
             torch.save({
                 'epoch':       epoch,
@@ -556,16 +586,28 @@ def main():
             if is_best:
                 best_path = os.path.join(
                     args.save_dir,
-                    f'proco_{args.dataset}_imb{args.imbalance_factor}_BEST.pth',
+                    f'proco_{args.dataset}_{args.backbone}_{args.activation}_imb{args.imbalance_factor}_BEST.pth',
                 )
                 import shutil
                 shutil.copy(ckpt_path, best_path)
                 print(f'  ★ New best saved → {best_path}')
+
+        epoch_times.append(time.perf_counter() - epoch_start_time)
+        last_epoch = epoch
     
-    log_results_to_csv(args, overall, many, medium, few, best_acc, epoch)
+    total_training_time = sum(epoch_times)
+    avg_epoch_time = total_training_time / len(epoch_times) if epoch_times else 0.0
+
+    log_results_to_csv(
+        args, overall, many, medium, few, best_acc, last_epoch,
+        total_training_time, avg_epoch_time,
+    )
 
     print(f'\n{"="*65}')
     print(f'  Training complete!  Best accuracy: {best_acc:.2f}%')
+    if epoch_times:
+        print(f'  Total training time: {total_training_time:.2f}s')
+        print(f'  Avg epoch time     : {avg_epoch_time:.2f}s')
     print(f'{"="*65}\n')
 
     if writer is not None:
