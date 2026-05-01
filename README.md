@@ -3,6 +3,7 @@
 *TPAMI 2024 — Du, Wang, Song, Huang*
 Official repo: https://github.com/LeapLabTHU/ProCo
 
+---
 
 ## Installation
 
